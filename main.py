@@ -26,7 +26,8 @@ embeddings = JinaEmbeddings(jina_api_key=JINA_KEY, model_name="jina-embeddings-v
 vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-llm = ChatGroq(model="llama-3.1-8b-instant", api_key=GROQ_KEY, temperature=0.1)
+## llm = ChatGroq(model="llama-3.1-8b-instant", api_key=GROQ_KEY, temperature=0.1)
+llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=GROQ_KEY, temperature=0.1)
 
 prompt = ChatPromptTemplate.from_template("""
 You are Delaine Technologies support bot. Gurugram, 2014, 50-249 team. Services: Education App, LMS, VOD Live Class, eCommerce, React Native, IoT.
