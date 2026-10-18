@@ -167,3 +167,32 @@ async def telegram_webhook(req: Request):
     except Exception as e:
         logging.error(f"ERROR: {e}", exc_info=True)
     return {"ok": True}
+
+@app.get("/chat")
+@app.post("/chat")
+async def chat_test(req: Request, q: str = None):
+    # Accept ?q=... or JSON {"q":"..."} or {"question":"..."}
+    question = q
+    if not question:
+        try:
+            body = await req.json()
+            question = body.get("q") or body.get("question") or body.get("text")
+        except:
+            pass
+    
+    if not question:
+        return {"error": "Add ?q=your question, e.g. /chat?q=what is LMS"}
+
+    # Use dummy user 0 for testing
+    history = get_history(0)
+    
+    answer = chain.invoke({
+        "question": question,
+        "chat_history": history
+    })
+    
+    history.append(HumanMessage(content=question))
+    history.append(AIMessage(content=answer))
+    chat_histories[0] = history[-6:]
+    
+    return {"question": question, "answer": answer}
