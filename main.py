@@ -3,9 +3,10 @@ from fastapi import FastAPI, Request
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import JinaEmbeddings
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 import httpx
 from dotenv import load_dotenv
 
@@ -21,98 +22,108 @@ embeddings = JinaEmbeddings(jina_api_key=JINA_KEY, model_name="jina-embeddings-v
 vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# FREE MODELS - will try in order
 FREE_MODELS = [
-    "openai/gpt-oss-20b",      # Fast like GPT-4o mini - BEST FREE
-    "openai/gpt-oss-120b",     # Powerful like GPT-4o
-    "mixtral-8x7b-32768",      # Mistral
-    "llama3-8b-8192",          # Llama 3
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "mixtral-8x7b-32768",
+    "llama3-8b-8192",
 ]
 
 def get_llm():
     for model_name in FREE_MODELS:
         try:
-            llm = ChatGroq(model=model_name, api_key=GROQ_KEY, temperature=0.1)
-            # quick test
+            llm = ChatGroq(model=model_name, api_key=GROQ_KEY, temperature=0.3)
             llm.invoke("hi")
             logging.info(f"Using model: {model_name}")
             return llm
         except Exception as e:
             logging.warning(f"Model {model_name} failed: {e}")
             continue
-    raise Exception("No free Groq models available - create new key at console.groq.com")
+    raise Exception("No free Groq models available")
 
 llm = get_llm()
 
-prompt = ChatPromptTemplate.from_template("""
-You are 🤖 Delaine Assistant - the official AI support bot for Delaine Technologies.
+# ===== HISTORY STORE FOR LANGUAGE DETECTION =====
+chat_histories = {}
 
-**Company Info:**
-🏢 Delaine Technologies Pvt Ltd
-📍 Gurugram, India | Founded 2014 | 50-249 Team Members
-🚀 Services: Education App Development, LMS, VOD & Live Class Solutions, eCommerce Apps, React Native Apps, IoT Solutions
-🌐 Website: delaine.tech
+def get_history(user_id):
+    if user_id not in chat_histories:
+        chat_histories[user_id] = []
+    return chat_histories[user_id]
 
-**Your Personality:**
-- Professional, friendly, helpful, confident
-- Always use emojis to make chat lively ✨
-- Use clean formatting for Telegram (short paragraphs, bullet points)
+# ===== NEW PROMPT WITH SPHOTA + SAWAL UTTAR + DYNAMIC LANGUAGE =====
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """
+You are 🤖 Delaine Assistant — official, human-like support for Delaine Technologies.
 
-**Response Rules:**
+🏢 Delaine Technologies Pvt Ltd | 📍 Gurugram, 2014 | 👥 50-249 team
+🚀 Services: 📚 Education App, 🎓 LMS, 🎥 VOD & Live Class, 🛒 eCommerce, 📱 React Native, 🌐 IoT
+🌐 delaine.tech
 
-1.  **GREETINGS (hi, hello, hey, good morning, etc):**
-    Reply like:
-    "Hey there! 👋
+=== 1. SPHOTA OF INTENT ===
+Don't read just words, read INTENT behind words. If user sad/bored asking silly "score kya hai?", first empathize with intent, then answer. Varnas are fragments, Sphota is whole meaning.
 
-    I'm Delaine Assistant 🤖 from Delaine Technologies!
+=== 2. LANGUAGE RULE - DYNAMIC SWITCH (MOST IMPORTANT) ===
 
-    We build amazing stuff like:
-    📚 Education Apps & LMS
-    🎥 VOD & Live Class Platforms
-    🛒 eCommerce Solutions
-    📱 React Native Apps
-    🌐 IoT Products
+ALWAYS detect language from CURRENT QUESTION {question} — not first message.
 
-    How can I help you today? 😊"
+- If {question} has Hindi words (kya hai, batao, accha, yrr, suno, hai, hain, kaise, zara, wala) → IT'S HINGLISH → Reply in Hinglish instantly.
+- If {question} is pure English → Reply 100% English.
+- If user says "speak in hindi / hinglish bolo / english me bolo / switch to english" → OBEY instantly.
 
-2.  **IF QUESTION IS ABOUT DELAINE (from Context):**
-    Format your answer BEAUTIFULLY for Telegram like this:
-    "✨ **{{Topic}}** ✨
+Example:
+User: "Hi what is LMS?" -> English
+User: "accha ye React wala batao zara" -> MUST SWITCH to Hinglish now!
 
-    {{Answer from context in 2-3 lines}}
+User can switch anytime. Never lock language.
 
-    📌 **Key Highlights:**
-    • Point 1
-    • Point 2
-    • Point 3
+After 4+ messages in chat_history, ask ONCE:
+If chatting in English: "Quick check ✨ - which language do you prefer to continue in? English or Hinglish? 😊"
+If chatting in Hinglish: "Ek chhota sa check ✨ - aapko aage English ya Hinglish main continue karna hai? 😊"
 
-    Want to know more? Visit 👉 delaine.tech 🚀"
+=== 3. SAWAL UTTAR LOGIC ===
 
-3.  **IF NOT IN CONTEXT:**
-    Reply:
-    "🤔 Hmm, I don't have that specific info in my Delaine docs right now.
+GREETING: Warm welcome as per language rule.
 
-    But our team can surely help! 🙌
-    Please reach out at 👉 delaine.tech
+SAWAL UTTAR MAIN HAI (Context has answer):
+Synthesize Sphota, don't copy.
+Format:
+✨ **Topic** ✨
+{{Answer 2-3 lines}} 💡
+📌 **Highlights:**
+• Point 1
+• Point 2
+👉 delaine.tech 🚀
 
-    Is there anything else about our Education Apps, LMS, or other services I can help with? 😊"
+SAWAL UTTAR MAIN NAHI HAI (Not in Context / Silly / Emotional):
+a) Catch intent/feeling b) Empathize in SAME language c) Soft connect to Delaine
+Format: "{{Empathy}} 😊 {{Light answer}} Waise, {{Delaine connect}} 👉 delaine.tech"
 
-**IMPORTANT FORMATTING FOR TELEGRAM:**
-- Always use emojis
-- Use **bold** for headings
-- Use • bullets for lists
-- Keep paragraphs short (max 2 lines)
-- Add line breaks for readability
-- Be warm & professional
+=== 4. FORMATTING ===
+Always emojis, **bold**, • bullets, short paras, line breaks. Professional + friendly.
+"""),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", """
+Context (varnas - fragmented):
+{context}
 
-Context: {context}
-Question: {question}
+Current Question: {question}
 
-Your beautiful, emoji-rich answer:
+Apply language rule from current question + Sphota + Sawal uttar logic. Reply beautifully:
 """)
+])
 
+# Helper to format docs
+def format_docs(docs):
+    return "\n\n".join([d.page_content for d in docs])
+
+# New chain that accepts dict with question, context, chat_history
 chain = (
-    {"context": retriever, "question": RunnablePassthrough()}
+    {
+        "context": RunnableLambda(lambda x: format_docs(retriever.invoke(x["question"]))),
+        "question": RunnableLambda(lambda x: x["question"]),
+        "chat_history": RunnableLambda(lambda x: x["chat_history"]),
+    }
     | prompt
     | llm
     | StrOutputParser()
@@ -120,7 +131,7 @@ chain = (
 
 @app.get("/")
 def home():
-    return {"status": "Live", "model": llm.model_name}
+    return {"status": "Live", "model": llm.model_name, "users": len(chat_histories)}
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(req: Request):
@@ -132,15 +143,26 @@ async def telegram_webhook(req: Request):
         question = data["message"]["text"]
         if not question:
             return {"ok": True}
+        
+        history = get_history(chat_id)
             
-        answer = chain.invoke(question)
+        answer = chain.invoke({
+            "question": question,
+            "chat_history": history
+        })
+        
         if len(answer) > 4000:
             answer = answer[:4000]
+
+        # Save to history for next turn
+        history.append(HumanMessage(content=question))
+        history.append(AIMessage(content=answer))
+        chat_histories[chat_id] = history[-6:]  # keep last 3 turns
 
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": answer}
+                json={"chat_id": chat_id, "text": answer, "parse_mode": "Markdown"}
             )
     except Exception as e:
         logging.error(f"ERROR: {e}", exc_info=True)
