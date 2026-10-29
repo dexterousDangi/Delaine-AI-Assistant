@@ -186,8 +186,13 @@ async def telegram_webhook(req: Request):
             return {"ok": True}
         chat_id = data["message"]["chat"]["id"]
         question = data["message"]["text"]
+        username = data["message"]["from"].get("username", "Unknown")
         if not question:
             return {"ok": True}
+        
+        # ===== THIS WILL NOW SHOW IN LOGS =====
+        logging.info(f"📩 RECEIVED | User: {username} ({chat_id}) | Message: {question}")
+        # =======================================
         
         history = get_history(chat_id)
             
@@ -199,10 +204,15 @@ async def telegram_webhook(req: Request):
         if len(answer) > 4000:
             answer = answer[:4000]
 
-        # Save to history for next turn
+        # ===== THIS WILL NOW SHOW IN LOGS =====
+        logging.info(f"📤 SENT | To: {chat_id} | Answer: {answer[:200]}...")  # first 200 chars
+        logging.info(f"📤 FULL ANSWER | {answer}")
+        # =======================================
+
+        # Save to history
         history.append(HumanMessage(content=question))
         history.append(AIMessage(content=answer))
-        chat_histories[chat_id] = history[-6:]  # keep last 3 turns
+        chat_histories[chat_id] = history[-6:]
 
         async with httpx.AsyncClient() as client:
             await client.post(
@@ -210,13 +220,14 @@ async def telegram_webhook(req: Request):
                 json={"chat_id": chat_id, "text": answer, "parse_mode": "Markdown"}
             )
     except Exception as e:
-        logging.error(f"ERROR: {e}", exc_info=True)
+        logging.error(f"❌ ERROR: {e}", exc_info=True)
     return {"ok": True}
 
 @app.get("/chat")
 @app.post("/chat")
+
 async def chat_test(req: Request, q: str = None):
-    # Accept ?q=... or JSON {"q":"..."} or {"question":"..."}
+
     question = q
     if not question:
         try:
@@ -228,14 +239,13 @@ async def chat_test(req: Request, q: str = None):
     if not question:
         return {"error": "Add ?q=your question, e.g. /chat?q=what is LMS"}
 
-    # Use dummy user 0 for testing
+    logging.info(f"📩 WEB RECEIVED | Message: {question}")
+
     history = get_history(0)
+    answer = chain.invoke({"question": question, "chat_history": history})
     
-    answer = chain.invoke({
-        "question": question,
-        "chat_history": history
-    })
-    
+    logging.info(f"📤 WEB SENT | Answer: {answer[:500]}...")
+
     history.append(HumanMessage(content=question))
     history.append(AIMessage(content=answer))
     chat_histories[0] = history[-6:]
